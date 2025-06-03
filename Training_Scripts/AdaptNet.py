@@ -209,43 +209,66 @@ class AdaptiveLayer(nn.Module):
 
 class Model(nn.Module):
     def __init__(self):
-        super(Model, self).__init__()
+        super().__init__()
 
-        def init_weights(m):
-            if isinstance(m, nn.Conv2d) or isinstance(m, nn.Linear):
-                torch.nn.init.normal_(m.weight, 0, 0.01)
-                if m.bias is not None:
-                    m.bias.data.fill_(0.01)
+        self.conv        = nn.Conv2d(2, n_kernels,
+                                     kernel_size=(kernel_size, kernel_size),
+                                     stride=(stride_size, stride_size))
+        self.dropout_v1  = nn.Dropout2d(p=0.30)     
+        self.relu_flat   = nn.Sequential(nn.Flatten(), nn.ReLU())
 
-        self.conv = nn.Conv2d(2, n_kernels, kernel_size=(kernel_size, kernel_size), stride=(stride_size, stride_size))
-        self.flatten = nn.Sequential(nn.Flatten(), nn.ReLU())
-
-        # Add the AdaptiveLayer here
         self.adaptive_layer = AdaptiveLayer(num_features=act_size * act_size * n_kernels,
                                             adaptation_rate=0.1,
                                             recovery_rate=0.1)
+
+        self.dropout_mt  = nn.Dropout(p=0.30)        
 
         self.rnn = SimpleRNN(input_size=act_size * act_size * n_kernels,
                              hidden_size=rnn_units,
                              nonlinearity='relu',
                              batch_first=True,
                              adaptation_rate=0.4,
-                             recovery_rate=0.1).to(device)
-        self.fc = nn.Linear(rnn_units, 2)
+                             recovery_rate=0.1)
 
-        self.apply(init_weights)
+        self.fc  = nn.Linear(rnn_units, 2)
 
+        self.apply(self._init_weights)
+
+    @staticmethod
+    def _init_weights(m):
+        if isinstance(m, (nn.Conv2d, nn.Linear)):
+            nn.init.normal_(m.weight, mean=0.0, std=0.01)
+            if m.bias is not None:
+                m.bias.data.fill_(0.01)
+
+    # -----------------------------------------------------------------------
     def forward(self, x):
-        batch_size, num_frames, _, _, _ = x.size()
-        out_conv = torch.stack([self.conv(x[:, i]) for i in range(num_frames)], dim=1)
-        out_flat = torch.stack([self.flatten(out_conv[:, i]) for i in range(num_frames)], dim=1)
+        """
+        x shape: [B, T, 2, 32, 32]
+        returns: out_fc, out_conv, out_flat, out_adapted, out_rnn
+        """
+        B, T, _, _, _ = x.shape
 
-        # Apply the AdaptiveLayer to the flattened output
-        out_adapted = self.adaptive_layer(out_flat)
+        out_conv = torch.stack(
+            [ self.dropout_v1( self.conv( x[:, t] ) )  
+              for t in range(T) ],
+            dim=1)                                     
 
-        # Use the adapted output for the RNN
-        out_rnn, _ = self.rnn(out_adapted)
-        out_fc = torch.stack([self.fc(out_rnn[:, i]) for i in range(num_frames)], dim=1)
+        
+        out_flat = torch.stack(
+            [ self.relu_flat( out_conv[:, t] )
+              for t in range(T) ],
+            dim=1)                                    
+
+        out_adapted = self.adaptive_layer(out_flat)    
+
+
+        drop_mt  = self.dropout_mt(out_adapted)        
+        out_rnn, _ = self.rnn(drop_mt)                 
+
+        out_fc = torch.stack(
+            [ self.fc(out_rnn[:, t]) for t in range(T) ],
+            dim=1)                                   
 
         return out_fc, out_conv, out_flat, out_adapted, out_rnn
 
