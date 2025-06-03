@@ -243,10 +243,6 @@ class Model(nn.Module):
 
     # -----------------------------------------------------------------------
     def forward(self, x):
-        """
-        x shape: [B, T, 2, 32, 32]
-        returns: out_fc, out_conv, out_flat, out_adapted, out_rnn
-        """
         B, T, _, _, _ = x.shape
 
         out_conv = torch.stack(
